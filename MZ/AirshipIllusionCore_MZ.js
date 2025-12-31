@@ -1952,19 +1952,15 @@
             // 現在の飛空艇位置をマップ座標に変換
             const mapCoords = this._convertWorldToMapCoordinates(currentX, currentY);
 
-            // 保存されたマップデータから判定（内部から戻った場合でも正しく動作）
-            // $gameMapは現在の内部マップを参照している可能性があるため、
-            // 常に保存されたフィールドマップデータを使用する
+            // 保存されたマップデータを使用してRPGツクールMZ標準の判定を行う
             if ($gameAirshipIllusion.mapData && $gameAirshipIllusion.tilesetFlags) {
-                return this._checkMapPassabilityFromData(
-                    $gameAirshipIllusion.mapData,
-                    mapCoords.x,
-                    mapCoords.y
-                );
+                // RPGツクールMZ標準のisAirshipLandOkと同等の判定を行う
+                // Game_Map.prototype.isAirshipLandOk の実装:
+                // return this.checkPassage(x, y, 0x800) && this.checkPassage(x, y, 0x0f);
+                return this._checkAirshipLandOkFromSavedData(mapCoords.x, mapCoords.y);
             }
 
-            // フォールバック：$gameMap.isAirshipLandOk を使用
-            // （フィールドマップから直接飛行シーンに入った場合のみ有効）
+            // フォールバック：$gameMap.isAirshipLandOk を直接使用
             if ($gameMap && $gameMap.isAirshipLandOk &&
                 $gameMap.mapId() === $gameAirshipIllusion.returnMapId) {
                 return $gameMap.isAirshipLandOk(mapCoords.x, mapCoords.y);
@@ -1973,91 +1969,60 @@
             return false;
         }
 
-        _checkMapPassabilityFromData(mapData, x, y) {
+        // 保存されたマップデータを使用して、標準のisAirshipLandOkと同等の判定を行う
+        _checkAirshipLandOkFromSavedData(x, y) {
+            const mapData = $gameAirshipIllusion.mapData;
+            const flags = $gameAirshipIllusion.tilesetFlags;
+
+            if (!mapData || !flags) return false;
+
             const width = mapData.width;
             const height = mapData.height;
-            
+
             if (x < 0 || x >= width || y < 0 || y >= height) {
                 return false;
             }
-            
-            // タイルセットフラグが必須
-            if (!$gameAirshipIllusion.tilesetFlags) {
-                return false;
-            }
-            
-            // 各レイヤーの通行判定を確認（MZの判定順序に従う）
-            let isPassable = true;
-            let hasCheckedTile = false;
-            
-            // 上層から下層へチェック（レイヤー3→0）
+
+            // RPGツクールMZ標準: checkPassage(x, y, 0x800) && checkPassage(x, y, 0x0f)
+            // 0x800 = 飛空艇着陸可能フラグ
+            // 0x0f = 通行可能フラグ（4方向）
+            return this._checkPassageFromSavedData(x, y, 0x800, mapData, flags) &&
+                   this._checkPassageFromSavedData(x, y, 0x0f, mapData, flags);
+        }
+
+        // 保存されたデータでGame_Map.checkPassageと同等の判定
+        _checkPassageFromSavedData(x, y, bit, mapData, flags) {
+            const width = mapData.width;
+            const height = mapData.height;
+
+            // 全レイヤーのタイルIDを取得（Game_Map.allTilesと同等）
+            const tileIds = [];
             for (let z = 3; z >= 0; z--) {
                 const index = (z * height + y) * width + x;
                 const tileId = mapData.data[index] || 0;
-                
-                if (tileId === 0) continue;
-                
-                const flags = $gameAirshipIllusion.tilesetFlags[tileId];
-                if (flags === undefined) continue;
-                
-                hasCheckedTile = true;
-                
-                // A1タイル（水タイル）チェック
-                if (tileId >= 2048 && tileId < 2816) {
-                    return false;
-                }
-                
-                // A3, A4タイル（建物・壁・山）チェック
-                if (tileId >= 4352 && tileId < 5888) {
-                    const passability = flags & 0x0F;
-                    if (passability === 0x0F) {
-                        return false;
-                    }
-                }
-                
-                // スター通行判定（ビット4）
-                const isStarTile = (flags & 0x10) !== 0;
-                
-                if (!isStarTile) {
-                    // 通行判定（下位4ビット）
-                    const passability = flags & 0x0F;
-                    
-                    if (passability === 0x0F) {
-                        // 全方向通行不可
-                        return false;
-                    } else if (passability !== 0x00) {
-                        // 部分的に通行可能
-                        return false;
-                    }
-                    
-                    // このタイルは通行可能なので、下のレイヤーはチェック不要
-                    break;
-                }
-                // スタータイルの場合は次のレイヤーをチェック
-            }
-            
-            // 有効なタイルがチェックされなかった場合
-            if (!hasCheckedTile) {
-                return false;
-            }
-            
-            // 追加チェック：船通行可能な水域
-            const baseTileId = mapData.data[y * width + x] || 0;
-            if (baseTileId > 0) {
-                const baseFlags = $gameAirshipIllusion.tilesetFlags[baseTileId];
-                if (baseFlags !== undefined) {
-                    const boatPass = (baseFlags & 0x0200) === 0;
-                    const shipPass = (baseFlags & 0x0400) === 0;
-                    const passability = baseFlags & 0x0F;
-                    
-                    // 船が通行可能で歩行不可 = 水域
-                    if ((boatPass || shipPass) && passability !== 0x00) {
-                        return false;
-                    }
+                if (tileId > 0) {
+                    tileIds.push(tileId);
                 }
             }
-            
-            return isPassable;
+
+            // Game_Map.checkPassageと同等の判定
+            for (const tileId of tileIds) {
+                const flag = flags[tileId];
+                if (flag === undefined) continue;
+
+                // ビット16（0x10）= スター通行（☆マーク）- 上に乗れるタイル
+                if ((flag & 0x10) !== 0) {
+                    // スタータイルは判定をスキップして次のタイルへ
+                    continue;
+                }
+                // 指定ビットが立っていれば通行不可
+                if ((flag & bit) === 0) {
+                    return true;  // 通行可能
+                }
+                return false;  // 通行不可
+            }
+
+            return false;  // タイルがない場合は通行不可
         }
         
         _convertWorldToMapCoordinates(worldX, worldY) {
